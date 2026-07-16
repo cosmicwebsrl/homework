@@ -103,7 +103,8 @@ Body: `{ "body": "string" }` — non-empty; per-platform length limits enforced
 retried; poll the `Location` URL) · `FAILED` (permanent rejection; see `failureReason`).
 
 **Errors:** `404 COMMENT_NOT_FOUND` · `409 REPLY_TARGET_NOT_SYNCED` (parent has no platform
-identity yet) · `422 REPLY_DEPTH_EXCEEDED` · `422 REPLY_BODY_TOO_LONG` · `400` validation.
+identity yet) · `422 REPLY_DEPTH_EXCEEDED` · `422 REPLY_BODY_TOO_LONG` ·
+`422 IDEMPOTENCY_KEY_CONFLICT` (key reused with a different target/body) · `400` validation.
 
 ---
 

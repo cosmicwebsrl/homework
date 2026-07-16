@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CommentStatus, Platform, PlatformPost, PostStatus, Prisma } from '@prisma/client';
-import { CommentsRepository } from './comments.repository';
+import { Comment, Platform, PlatformPost, PostStatus, Prisma } from '@prisma/client';
+import { CommentsRepository, CommentWithPlatformPost } from './comments.repository';
 import { PlatformAdapterRegistry } from '../platforms/platform-adapter.registry';
 import { NormalizedPlatformComment } from '../platforms/platform-adapter.interface';
 import { PlatformApiError } from '../platforms/platform.errors';
 import {
   CommentNotFoundError,
+  IdempotencyKeyConflictError,
   PlatformPostNotFoundError,
   PostNotFoundError,
   PostNotPublishedError,
@@ -39,7 +40,8 @@ export class CommentsService {
     private readonly registry: PlatformAdapterRegistry,
     config: ConfigService,
   ) {
-    this.syncTtlMs = config.get<number>('COMMENTS_SYNC_TTL_SECONDS', 60) * 1000;
+    // Env values arrive as strings — coerce explicitly rather than relying on `*`.
+    this.syncTtlMs = Number(config.get('COMMENTS_SYNC_TTL_SECONDS') ?? 60) * 1000;
   }
 
   /**
@@ -70,10 +72,9 @@ export class CommentsService {
       throw new PlatformPostNotFoundError(postId, query.platform ?? 'any platform');
     }
 
-    const syncStatus: SyncStatusDto[] = [];
-    for (const platformPost of platformPosts) {
-      syncStatus.push(await this.syncIfStale(platformPost));
-    }
+    // Platforms are independent — sync them concurrently; total latency is the
+    // slowest platform's, not the sum. Order of syncStatus matches platformPosts.
+    const syncStatus = await Promise.all(platformPosts.map((pp) => this.syncIfStale(pp)));
 
     const cursor = query.cursor ? decodeCursor(query.cursor) : null;
     const limit = query.limit ?? 20;
@@ -91,7 +92,8 @@ export class CommentsService {
     const platformByPostId = new Map(platformPosts.map((p) => [p.id, p.platform]));
     return {
       data: page.map((c) =>
-        CommentResponseDto.from(c, platformByPostId.get(c.platformPostId) as Platform),
+        // Non-null: every row was selected by platformPostId ∈ platformPosts.
+        CommentResponseDto.from(c, platformByPostId.get(c.platformPostId)!),
       ),
       meta: {
         nextCursor: hasNextPage ? encodeCursor({ occurredAt: last.occurredAt, id: last.id }) : null,
@@ -115,10 +117,7 @@ export class CommentsService {
     if (idempotencyKey) {
       const existing = await this.repository.findByIdempotencyKey(idempotencyKey);
       if (existing) {
-        return {
-          reply: CommentResponseDto.from(existing, existing.platformPost.platform),
-          replayed: true,
-        };
+        return this.replayReply(existing, commentId, dto);
       }
     }
 
@@ -142,7 +141,7 @@ export class CommentsService {
     }
 
     // 1. Persist intent (outbox row).
-    let reply;
+    let reply: Comment;
     try {
       reply = await this.repository.createLocalReply({
         platformPostId: parent.platformPostId,
@@ -160,10 +159,7 @@ export class CommentsService {
       ) {
         const winner = await this.repository.findByIdempotencyKey(idempotencyKey);
         if (winner) {
-          return {
-            reply: CommentResponseDto.from(winner, winner.platformPost.platform),
-            replayed: true,
-          };
+          return this.replayReply(winner, commentId, dto);
         }
       }
       throw e;
@@ -208,6 +204,25 @@ export class CommentsService {
   }
 
   /**
+   * Replays a previously stored reply for an Idempotency-Key — but only if the
+   * request is actually the same one. Reusing a key with a different target or
+   * body is a client bug and must fail loudly, not silently return stale data.
+   */
+  private replayReply(
+    existing: CommentWithPlatformPost,
+    commentId: string,
+    dto: CreateReplyDto,
+  ): ReplyResult {
+    if (existing.parentCommentId !== commentId || existing.body !== dto.body) {
+      throw new IdempotencyKeyConflictError();
+    }
+    return {
+      reply: CommentResponseDto.from(existing, existing.platformPost.platform),
+      replayed: true,
+    };
+  }
+
+  /**
    * Pulls the latest comments for one platform publication if the local copy
    * is older than the TTL. Failures degrade to serving cached data.
    */
@@ -240,22 +255,30 @@ export class CommentsService {
    * Upserts platform comments locally, resolving external parent IDs to local
    * row IDs. Processes in dependency order so a parent always exists before
    * its replies (platforms can return them interleaved).
+   *
+   * An item is processable when its parent is null, already persisted, or not
+   * present in this payload at all (a true orphan — resolved via the DB or
+   * degraded to top-level). Items whose parent is elsewhere in the payload are
+   * deferred until that parent has been persisted, so payload order never
+   * corrupts threading.
    */
   private async mirrorComments(
     platformPostId: string,
     comments: NormalizedPlatformComment[],
   ): Promise<void> {
+    const payloadIds = new Set(comments.map((c) => c.externalId));
     const localByExternalId = new Map<string, { id: string; depth: number }>();
     const pending = [...comments];
 
     while (pending.length > 0) {
       const readyIndex = pending.findIndex(
-        (c) => c.externalParentId === null || localByExternalId.has(c.externalParentId),
+        (c) =>
+          c.externalParentId === null ||
+          localByExternalId.has(c.externalParentId) ||
+          !payloadIds.has(c.externalParentId), // true orphan: parent not in payload
       );
-      const comment =
-        readyIndex >= 0
-          ? pending.splice(readyIndex, 1)[0]
-          : pending.shift()!; // orphan (parent not in payload): treat as top-level
+      // readyIndex === -1 only on a parent cycle (malformed payload): force progress.
+      const comment = readyIndex >= 0 ? pending.splice(readyIndex, 1)[0] : pending.shift()!;
 
       let parentCommentId: string | null = null;
       let depth = 0;

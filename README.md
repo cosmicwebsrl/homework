@@ -3,8 +3,7 @@
 A comment system for a **social media scheduling API** that publishes posts to multiple
 platforms (Facebook, LinkedIn, Instagram) and is expected to support more in the future.
 
-Built as a senior full-stack hiring assignment. The goal is not feature completeness but
-**clear reasoning and engineering decisions** — every major choice is documented in
+Every major choice is documented in
 [docs/adr](docs/adr).
 
 ## What it does

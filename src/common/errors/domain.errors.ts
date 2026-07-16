@@ -84,3 +84,14 @@ export class InvalidCursorError extends DomainError {
     super('The provided cursor is malformed', 400, 'INVALID_CURSOR');
   }
 }
+
+/** Same Idempotency-Key reused with different request parameters. */
+export class IdempotencyKeyConflictError extends DomainError {
+  constructor() {
+    super(
+      'This Idempotency-Key was already used with a different target comment or body',
+      422,
+      'IDEMPOTENCY_KEY_CONFLICT',
+    );
+  }
+}

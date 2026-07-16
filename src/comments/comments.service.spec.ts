@@ -20,6 +20,7 @@ import {
   ReplyDepthExceededError,
   ReplyBodyTooLongError,
   ReplyTargetNotSyncedError,
+  IdempotencyKeyConflictError,
 } from '../common/errors/domain.errors';
 
 // ---------------------------------------------------------------------------
@@ -273,6 +274,59 @@ describe('CommentsService — getCommentsForPost', () => {
     );
   });
 
+  it('defers a child whose parent appears later in the payload, instead of orphaning it', async () => {
+    repo.findPostById.mockResolvedValue(post);
+    repo.findPlatformPosts.mockResolvedValue([platformPost]);
+    // Payload order: C (child of B) first, then B (whose parent A is NOT in the
+    // payload => true orphan). C must wait for B, not be degraded to top-level.
+    adapter.fetchComments.mockResolvedValue({
+      comments: [
+        {
+          externalId: 'fb_c_C',
+          externalParentId: 'fb_c_B',
+          authorExternalId: 'u3',
+          authorName: 'Cle',
+          body: 'grandchild',
+          publishedAt: new Date(),
+        },
+        {
+          externalId: 'fb_c_B',
+          externalParentId: 'fb_c_A_missing',
+          authorExternalId: 'u2',
+          authorName: 'Bob',
+          body: 'chain head with missing parent',
+          publishedAt: new Date(),
+        },
+      ],
+    });
+    repo.findByExternalId.mockResolvedValue(null); // A is nowhere, not even in the DB
+    repo.upsertSyncedComment
+      .mockResolvedValueOnce(makeComment({ id: 'local_B', externalCommentId: 'fb_c_B' }))
+      .mockResolvedValueOnce(
+        makeComment({ id: 'local_C', externalCommentId: 'fb_c_C', depth: 1 }),
+      );
+    repo.markPlatformPostSynced.mockResolvedValue(platformPost);
+    repo.findTopLevelPage.mockResolvedValue([]);
+
+    await service.getCommentsForPost('post_1', {});
+
+    // B first (orphan -> top-level), then C correctly parented under B.
+    expect(repo.upsertSyncedComment).toHaveBeenNthCalledWith(
+      1,
+      'pp_1',
+      expect.objectContaining({ externalId: 'fb_c_B' }),
+      null,
+      0,
+    );
+    expect(repo.upsertSyncedComment).toHaveBeenNthCalledWith(
+      2,
+      'pp_1',
+      expect.objectContaining({ externalId: 'fb_c_C' }),
+      'local_B',
+      1,
+    );
+  });
+
   it('emits a nextCursor only when more rows exist', async () => {
     repo.findPostById.mockResolvedValue(post);
     repo.findPlatformPosts.mockResolvedValue([{ ...platformPost, commentsSyncedAt: new Date() }]);
@@ -369,7 +423,13 @@ describe('CommentsService — replyToComment', () => {
   });
 
   it('replays an existing reply for a known Idempotency-Key without touching the platform', async () => {
-    const existing = makeComment({ id: 'r_1', status: CommentStatus.SENT, idempotencyKey: 'k1' });
+    const existing = makeComment({
+      id: 'r_1',
+      status: CommentStatus.SENT,
+      idempotencyKey: 'k1',
+      parentCommentId: 'c_1',
+      body: 'hi',
+    });
     repo.findByIdempotencyKey.mockResolvedValue(existing);
 
     const { reply, replayed } = await service.replyToComment('c_1', { body: 'hi' }, 'k1');
@@ -378,6 +438,19 @@ describe('CommentsService — replyToComment', () => {
     expect(reply.id).toBe('r_1');
     expect(repo.createLocalReply).not.toHaveBeenCalled();
     expect(adapter.postReply).not.toHaveBeenCalled();
+  });
+
+  it('rejects an Idempotency-Key reused with different parameters (422 conflict)', async () => {
+    repo.findByIdempotencyKey.mockResolvedValue(
+      makeComment({ id: 'r_1', idempotencyKey: 'k1', parentCommentId: 'c_1', body: 'original' }),
+    );
+
+    await expect(
+      service.replyToComment('c_1', { body: 'DIFFERENT body' }, 'k1'),
+    ).rejects.toThrow(IdempotencyKeyConflictError);
+    await expect(
+      service.replyToComment('c_OTHER', { body: 'original' }, 'k1'),
+    ).rejects.toThrow(IdempotencyKeyConflictError);
   });
 
   it('enforces the platform max reply depth', async () => {

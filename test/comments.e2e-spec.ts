@@ -1,9 +1,9 @@
-import { INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Platform, PostStatus } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { GlobalExceptionFilter } from '../src/common/filters/global-exception.filter';
+import { configureApp } from '../src/app.setup';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 /**
@@ -16,13 +16,7 @@ describe('Comments API (e2e)', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = moduleRef.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
-    app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
-    );
-    app.useGlobalFilters(new GlobalExceptionFilter());
+    app = configureApp(moduleRef.createNestApplication());
     await app.init();
 
     prisma = moduleRef.get(PrismaService);
@@ -200,6 +194,22 @@ describe('Comments API (e2e)', () => {
 
       expect(replay.body.id).toBe(first.body.id);
       expect(replay.headers['idempotency-replayed']).toBe('true');
+    });
+
+    it('422 when an Idempotency-Key is reused with a different body', async () => {
+      const key = `e2e-conflict-${Date.now()}`;
+      await request(app.getHttpServer())
+        .post(`/api/v1/comments/${parentId}/replies`)
+        .set('Idempotency-Key', key)
+        .send({ body: 'first body' })
+        .expect(202);
+
+      const conflict = await request(app.getHttpServer())
+        .post(`/api/v1/comments/${parentId}/replies`)
+        .set('Idempotency-Key', key)
+        .send({ body: 'a different body' })
+        .expect(422);
+      expect(conflict.body.title).toBe('IDEMPOTENCY_KEY_CONFLICT');
     });
 
     it('keeps a rate-limited reply PENDING (outbox preserved for retry)', async () => {

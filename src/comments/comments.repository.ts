@@ -112,15 +112,20 @@ export class CommentsRepository {
         ],
       }),
     };
-    const rows = await this.prisma.comment.findMany({
-      where,
-      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
-      take: limit + 1,
-      include: includeReplies
-        ? { replies: { orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }] } }
-        : undefined,
-    });
-    return rows.map((r) => ({ ...r, replies: (r as CommentWithReplies).replies ?? [] }));
+    const orderBy: Prisma.CommentOrderByWithRelationInput[] = [
+      { occurredAt: 'asc' },
+      { id: 'asc' },
+    ];
+    if (includeReplies) {
+      return this.prisma.comment.findMany({
+        where,
+        orderBy,
+        take: limit + 1,
+        include: { replies: { orderBy } },
+      });
+    }
+    const rows = await this.prisma.comment.findMany({ where, orderBy, take: limit + 1 });
+    return rows.map((r) => ({ ...r, replies: [] }));
   }
 
   findCommentById(commentId: string): Promise<CommentWithPlatformPost | null> {
