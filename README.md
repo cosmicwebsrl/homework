@@ -13,6 +13,7 @@ Every major choice is documented in
 | Retrieve comments for a published post (all platforms or one) | `GET /api/v1/posts/:postId/comments` |
 | Reply to a comment | `POST /api/v1/comments/:commentId/replies` |
 | Poll a reply's delivery status | `GET /api/v1/comments/:commentId` |
+| Health probe (service + DB) | `GET /api/health` |
 
 Interactive API docs (Swagger UI): **http://localhost:3000/docs**
 
@@ -31,7 +32,7 @@ parameters is rejected with `422 IDEMPOTENCY_KEY_CONFLICT`).
 
 - **NestJS 11** (TypeScript, strict mode) — modular DI, first-class Swagger & validation
 - **PostgreSQL + Prisma 6** — schema in [prisma/schema.prisma](prisma/schema.prisma)
-- **Jest + Supertest** — 30 unit tests, 14 e2e tests
+- **Jest + Supertest** — 31 unit tests, 15 e2e tests
 
 ## Quickstart
 

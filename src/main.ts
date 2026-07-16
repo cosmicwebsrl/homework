@@ -5,6 +5,9 @@ import { configureApp } from './app.setup';
 
 async function bootstrap(): Promise<void> {
   const app = configureApp(await NestFactory.create(AppModule));
+  // SIGTERM/SIGINT trigger onModuleDestroy (Prisma disconnect) — required for
+  // clean connection release during rolling deploys / pod rotation.
+  app.enableShutdownHooks();
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Social Scheduler — Comments API')

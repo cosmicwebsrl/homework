@@ -18,7 +18,7 @@ workflow:
    line by line.
 3. **Verification, not trust.** Every flow was exercised twice: manually with `curl` against
    the running API (pagination walk, idempotency replay, simulated platform failures) and via
-   the automated suites (30 unit + 14 e2e tests). A post-implementation review pass found and
+   the automated suites (31 unit + 15 e2e tests). A post-implementation review pass found and
    fixed a real threading-order bug in the sync mirror logic, now pinned by a regression test.
 4. **Documentation drafting.** ADRs and diagrams were drafted with AI from my decisions and
    edited for accuracy.

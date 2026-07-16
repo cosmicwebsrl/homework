@@ -116,6 +116,14 @@ Fetch one comment — primarily to poll a reply's delivery status (`PENDING → 
 
 ---
 
+## GET /health (version-neutral: /api/health)
+
+Liveness/readiness probe — includes a database round trip.
+
+**200** `{ "status": "ok", "db": "up" }` · **503** `{ "status": "degraded", "db": "down" }`
+
+---
+
 ## Design notes
 
 - **Why 202 for replies:** honest about the two-system write — see

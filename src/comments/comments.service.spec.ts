@@ -327,6 +327,27 @@ describe('CommentsService — getCommentsForPost', () => {
     );
   });
 
+  it('deduplicates concurrent syncs of the same platform post (stampede guard)', async () => {
+    repo.findPostById.mockResolvedValue(post);
+    repo.findPlatformPosts.mockResolvedValue([platformPost]); // stale
+    let resolveFetch!: (v: { comments: [] }) => void;
+    adapter.fetchComments.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    repo.markPlatformPostSynced.mockResolvedValue(platformPost);
+    repo.findTopLevelPage.mockResolvedValue([]);
+
+    // Two requests race while the platform fetch is still in flight.
+    const first = service.getCommentsForPost('post_1', {});
+    const second = service.getCommentsForPost('post_1', {});
+    resolveFetch({ comments: [] });
+    await Promise.all([first, second]);
+
+    expect(adapter.fetchComments).toHaveBeenCalledTimes(1); // shared in-flight sync
+  });
+
   it('emits a nextCursor only when more rows exist', async () => {
     repo.findPostById.mockResolvedValue(post);
     repo.findPlatformPosts.mockResolvedValue([{ ...platformPost, commentsSyncedAt: new Date() }]);

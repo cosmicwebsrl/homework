@@ -65,6 +65,13 @@ describe('Comments API (e2e)', () => {
     });
   }
 
+  describe('GET /api/health', () => {
+    it('reports service and database health', async () => {
+      const res = await request(app.getHttpServer()).get('/api/health').expect(200);
+      expect(res.body).toEqual({ status: 'ok', db: 'up' });
+    });
+  });
+
   describe('GET /api/v1/posts/:postId/comments', () => {
     it('aggregates comments from all platforms on first read (sync-on-read)', async () => {
       const res = await request(app.getHttpServer())

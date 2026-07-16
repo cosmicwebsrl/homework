@@ -223,10 +223,32 @@ export class CommentsService {
   }
 
   /**
+   * Stampede guard: concurrent requests for the same stale platform post share
+   * ONE in-flight sync instead of each hitting the platform (wasting rate-limit
+   * budget on identical work). Scoped to this process — multi-instance
+   * deployments would add a distributed lock or route syncs through a queue
+   * (see roadmap); the upserts are idempotent either way, so this is purely an
+   * efficiency concern, never a correctness one.
+   */
+  private readonly inflightSyncs = new Map<string, Promise<SyncStatusDto>>();
+
+  private syncIfStale(platformPost: PlatformPost): Promise<SyncStatusDto> {
+    const inflight = this.inflightSyncs.get(platformPost.id);
+    if (inflight) {
+      return inflight;
+    }
+    const sync = this.doSyncIfStale(platformPost).finally(() =>
+      this.inflightSyncs.delete(platformPost.id),
+    );
+    this.inflightSyncs.set(platformPost.id, sync);
+    return sync;
+  }
+
+  /**
    * Pulls the latest comments for one platform publication if the local copy
    * is older than the TTL. Failures degrade to serving cached data.
    */
-  private async syncIfStale(platformPost: PlatformPost): Promise<SyncStatusDto> {
+  private async doSyncIfStale(platformPost: PlatformPost): Promise<SyncStatusDto> {
     const { platform, commentsSyncedAt } = platformPost;
     const fresh =
       commentsSyncedAt !== null && Date.now() - commentsSyncedAt.getTime() < this.syncTtlMs;
@@ -253,14 +275,15 @@ export class CommentsService {
 
   /**
    * Upserts platform comments locally, resolving external parent IDs to local
-   * row IDs. Processes in dependency order so a parent always exists before
-   * its replies (platforms can return them interleaved).
+   * row IDs. Processes in dependency **waves**: every comment whose parent is
+   * already resolvable is persisted concurrently, then the next wave runs —
+   * so a payload of T top-level comments + R replies costs 2 concurrent waves
+   * rather than T+R sequential round trips.
    *
-   * An item is processable when its parent is null, already persisted, or not
+   * A comment is ready when its parent is null, already persisted, or not
    * present in this payload at all (a true orphan — resolved via the DB or
-   * degraded to top-level). Items whose parent is elsewhere in the payload are
-   * deferred until that parent has been persisted, so payload order never
-   * corrupts threading.
+   * degraded to top-level). Children whose parent is elsewhere in the payload
+   * wait for the parent's wave, so payload order never corrupts threading.
    */
   private async mirrorComments(
     platformPostId: string,
@@ -268,37 +291,42 @@ export class CommentsService {
   ): Promise<void> {
     const payloadIds = new Set(comments.map((c) => c.externalId));
     const localByExternalId = new Map<string, { id: string; depth: number }>();
-    const pending = [...comments];
+    let pending = [...comments];
 
     while (pending.length > 0) {
-      const readyIndex = pending.findIndex(
+      const ready = pending.filter(
         (c) =>
           c.externalParentId === null ||
           localByExternalId.has(c.externalParentId) ||
           !payloadIds.has(c.externalParentId), // true orphan: parent not in payload
       );
-      // readyIndex === -1 only on a parent cycle (malformed payload): force progress.
-      const comment = readyIndex >= 0 ? pending.splice(readyIndex, 1)[0] : pending.shift()!;
+      // Empty only on a parent cycle (malformed payload): force progress.
+      const wave = ready.length > 0 ? ready : [pending[0]];
+      const waveIds = new Set(wave.map((c) => c.externalId));
+      pending = pending.filter((c) => !waveIds.has(c.externalId));
 
-      let parentCommentId: string | null = null;
-      let depth = 0;
-      if (comment.externalParentId) {
-        const parent =
-          localByExternalId.get(comment.externalParentId) ??
-          (await this.findLocalParent(platformPostId, comment.externalParentId));
-        if (parent) {
-          parentCommentId = parent.id;
-          depth = parent.depth + 1;
-        }
-      }
-
-      const saved = await this.repository.upsertSyncedComment(
-        platformPostId,
-        comment,
-        parentCommentId,
-        depth,
+      await Promise.all(
+        wave.map(async (comment) => {
+          let parentCommentId: string | null = null;
+          let depth = 0;
+          if (comment.externalParentId) {
+            const parent =
+              localByExternalId.get(comment.externalParentId) ??
+              (await this.findLocalParent(platformPostId, comment.externalParentId));
+            if (parent) {
+              parentCommentId = parent.id;
+              depth = parent.depth + 1;
+            }
+          }
+          const saved = await this.repository.upsertSyncedComment(
+            platformPostId,
+            comment,
+            parentCommentId,
+            depth,
+          );
+          localByExternalId.set(comment.externalId, { id: saved.id, depth: saved.depth });
+        }),
       );
-      localByExternalId.set(comment.externalId, { id: saved.id, depth: saved.depth });
     }
   }
 
