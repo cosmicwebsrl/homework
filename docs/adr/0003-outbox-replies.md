@@ -28,9 +28,12 @@ The API responds **202 Accepted** with a `Location` header — honest semantics:
 durable but platform delivery may still be pending. Clients poll `GET /comments/:id`.
 
 **Idempotency:** clients may send an `Idempotency-Key` header, stored on the comment row with
-a unique constraint. A replay returns the original reply (`Idempotency-Replayed: true`).
-Concurrent duplicates are resolved by the DB constraint (the P2002 loser fetches the winner) —
-correctness comes from the database, not from application-level locking.
+a unique constraint. A replay of the **same request** returns the original reply
+(`Idempotency-Replayed: true`); reusing a key with a *different* target comment or body is a
+client bug and fails with `422 IDEMPOTENCY_KEY_CONFLICT` instead of silently returning stale
+data (Stripe/IETF idempotency-key semantics). Concurrent duplicates are resolved by the DB
+constraint (the P2002 loser fetches the winner) — correctness comes from the database, not
+from application-level locking.
 
 Adapters classify errors themselves (`PlatformApiError.retryable`), because only the adapter
 knows whether a given platform response is transient.

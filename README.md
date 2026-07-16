@@ -20,17 +20,18 @@ Interactive API docs (Swagger UI): **http://localhost:3000/docs**
 
 Platform integrations sit behind a single **port interface** (`SocialPlatformAdapter`) with one
 adapter per platform — adding a platform touches zero domain code. Comments are read through a
-**read-through cache**: stale platforms are re-fetched on demand and mirrored into PostgreSQL,
-so pagination/filtering/threading behave identically across platforms and the API degrades
-gracefully when a platform is down. Replies use a **transactional outbox**: the reply is
-persisted as `PENDING` before the platform call and promoted to `SENT`/`FAILED` after, with
-`Idempotency-Key` support so client retries never duplicate.
+**read-through cache**: stale platforms are re-fetched on demand (concurrently) and mirrored
+into PostgreSQL, so pagination/filtering/threading behave identically across platforms and the
+API degrades gracefully when a platform is down. Replies use a **transactional outbox**: the
+reply is persisted as `PENDING` before the platform call and promoted to `SENT`/`FAILED` after,
+with `Idempotency-Key` support so client retries never duplicate (reusing a key with different
+parameters is rejected with `422 IDEMPOTENCY_KEY_CONFLICT`).
 
 ## Tech stack
 
 - **NestJS 11** (TypeScript, strict mode) — modular DI, first-class Swagger & validation
 - **PostgreSQL + Prisma 6** — schema in [prisma/schema.prisma](prisma/schema.prisma)
-- **Jest + Supertest** — 28 unit tests, 13 e2e tests
+- **Jest + Supertest** — 30 unit tests, 14 e2e tests
 
 ## Quickstart
 

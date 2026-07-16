@@ -17,7 +17,14 @@ Comments live on the platforms; we need to serve them from our API. Three broad 
 `GET /posts/:id/comments` checks `commentsSyncedAt` per platform publication. If older than
 `COMMENTS_SYNC_TTL_SECONDS` (default 60s), fetch from the adapter and **upsert** into the
 local `comments` table keyed by `(platformPostId, externalCommentId)` — re-syncs are
-idempotent. The page is then always served from PostgreSQL.
+idempotent. Platform publications are independent, so stale platforms are synced
+**concurrently** (read-path latency is the slowest platform's, not the sum). The page is then
+always served from PostgreSQL.
+
+During the mirror step, external parent IDs are resolved to local rows in dependency order:
+a child whose parent appears elsewhere in the payload is deferred until the parent is
+persisted; only comments whose parent is absent from both the payload and the local store are
+degraded to top-level (orphans). Payload ordering therefore never corrupts threading.
 
 Degradation rules:
 - Platform unreachable **and** a previous sync exists → serve the cached copy, report

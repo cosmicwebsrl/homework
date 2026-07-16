@@ -77,7 +77,7 @@ platform is attempted synchronously, and the response reports the current delive
 
 | Header | Required | Description |
 |---|---|---|
-| `Idempotency-Key` | no | replaying the same key returns the original reply (`Idempotency-Replayed: true`) |
+| `Idempotency-Key` | no | replaying the same request returns the original reply (`Idempotency-Replayed: true`); reusing the key with a different target/body → `422 IDEMPOTENCY_KEY_CONFLICT` |
 
 Body: `{ "body": "string" }` — non-empty; per-platform length limits enforced
 (FB 8000 / LinkedIn 3000 / Instagram 2200).
