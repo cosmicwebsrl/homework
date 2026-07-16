@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+*.log
+.DS_Store
+
+# Private presentation material (kept local, not part of the submission)
+docs/INTERVIEW_PREP.md
+docs/ARCHITECTURE.md

@@ -1,0 +1,119 @@
+// -----------------------------------------------------------------------------
+// Database schema — comment system for a multi-platform social media scheduler
+//
+// Design highlights (see docs/adr for full reasoning):
+//  * Post          — the scheduler's internal post (stand-in for the existing system)
+//  * PlatformPost  — one row per (post, platform) publication; owns the external ID
+//  * Comment       — unified table for BOTH platform-synced comments and locally
+//                    authored replies (outbox pattern: PENDING -> SENT/FAILED)
+// -----------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Supported platforms. Adding a platform = new enum value + new adapter class.
+enum Platform {
+  FACEBOOK
+  LINKEDIN
+  INSTAGRAM
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+}
+
+/// Where a comment row originated.
+enum CommentSource {
+  PLATFORM /// fetched from the social platform during sync
+  LOCAL /// authored through our API (a reply)
+}
+
+/// Lifecycle of a comment row.
+enum CommentStatus {
+  SYNCED /// mirrored from the platform
+  PENDING /// local reply persisted, delivery to platform not yet confirmed (outbox)
+  SENT /// local reply confirmed by the platform (externalCommentId assigned)
+  FAILED /// local reply permanently rejected by the platform
+}
+
+model Post {
+  id        String     @id @default(cuid())
+  content   String
+  status    PostStatus @default(DRAFT)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  platformPosts PlatformPost[]
+
+  @@map("posts")
+}
+
+model PlatformPost {
+  id             String    @id @default(cuid())
+  postId         String
+  platform       Platform
+  /// The platform's native ID for the published post (e.g. FB post id, LinkedIn URN).
+  externalPostId String
+  publishedAt    DateTime
+  /// Read-through cache freshness marker for comment sync.
+  commentsSyncedAt DateTime?
+
+  post     Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  comments Comment[]
+
+  @@unique([postId, platform])
+  @@unique([platform, externalPostId])
+  @@map("platform_posts")
+}
+
+model Comment {
+  id             String  @id @default(cuid())
+  platformPostId String
+  /// Platform-native comment ID. NULL while a local reply is still PENDING/FAILED.
+  externalCommentId String?
+  /// Self-reference enabling arbitrary-depth threading.
+  parentCommentId String?
+  /// 0 = top-level. Denormalized to enforce per-platform max reply depth cheaply.
+  depth Int @default(0)
+
+  authorExternalId String?
+  authorName       String
+  body             String
+
+  source CommentSource
+  status CommentStatus
+  /// Populated when a local reply delivery permanently fails.
+  failureReason String?
+  /// Client-supplied Idempotency-Key; prevents duplicate replies on retries.
+  idempotencyKey String? @unique
+
+  /// Single chronological axis for cursor pagination:
+  /// platform publish time for synced comments, creation time for local replies.
+  occurredAt DateTime
+  /// When the comment became visible on the platform (SENT/SYNCED only).
+  publishedAt DateTime?
+  /// Last time this row was refreshed from the platform.
+  syncedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  platformPost PlatformPost @relation(fields: [platformPostId], references: [id], onDelete: Cascade)
+  parent       Comment?     @relation("CommentReplies", fields: [parentCommentId], references: [id])
+  replies      Comment[]    @relation("CommentReplies")
+
+  /// Sync upserts are keyed by the platform's ID (NULLs allowed for pending local replies).
+  @@unique([platformPostId, externalCommentId])
+  /// Keyset (cursor) pagination index.
+  @@index([platformPostId, occurredAt, id])
+  @@index([parentCommentId])
+  @@map("comments")
+}
